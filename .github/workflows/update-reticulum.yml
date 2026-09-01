@@ -1,0 +1,64 @@
+name: Update Reticulum
+
+on:
+  schedule:
+    # check for a new rns release on pypi every day at 06:00 utc
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-reticulum
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+
+      - name: Check for new rns version on PyPI
+        id: check
+        run: |
+          LATEST=$(curl -s https://pypi.org/pypi/rns/json | jq -r '.info.version')
+          CURRENT=$(sed -n 's/^rns>=\(.*\)$/\1/p' requirements.txt)
+          if [ -z "$LATEST" ] || [ -z "$CURRENT" ]; then
+            echo "failed to resolve versions, aborting" >&2
+            exit 1
+          fi
+          echo "latest rns on pypi: $LATEST"
+          echo "current rns requirement: $CURRENT"
+          UPDATE=$(python3 -c "print('true' if tuple(map(int, '$LATEST'.split('.'))) > tuple(map(int, '$CURRENT'.split('.'))) else 'false')")
+          echo "update=$UPDATE" >> "$GITHUB_OUTPUT"
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Update requirements.txt
+        if: steps.check.outputs.update == 'true'
+        run: |
+          sed -i "s/^rns>=.*/rns>=${{ steps.check.outputs.version }}/" requirements.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add requirements.txt
+          git commit -m "update rns to v${{ steps.check.outputs.version }}"
+          git push
+
+      - name: Create tag and trigger build
+        if: steps.check.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MESHCHAT_VERSION=$(jq -r .version package.json)
+          TAG="v${MESHCHAT_VERSION}-rns-${{ steps.check.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists, skipping build trigger"
+            exit 0
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+          # a plain tag push with GITHUB_TOKEN would not start build.yml,
+          # but a workflow_dispatch with GITHUB_TOKEN does
+          gh workflow run build.yml --ref "$TAG"
+          echo "triggered Build and Release for $TAG"
