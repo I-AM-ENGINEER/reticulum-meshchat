@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  # needed for the GITHUB_TOKEN to dispatch build.yml via workflow_dispatch
+  actions: write
 
 concurrency:
   group: update-reticulum
